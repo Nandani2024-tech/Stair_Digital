@@ -1,0 +1,30 @@
+# Virtual Environment (Most likely cause of the "10k files")
+venv/
+env/
+.env
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local Data and Persistence
+data/
+data/uploads/
+data/chroma_db/
+data/logs/
+logs/
+
+# Temporary / Debug files
+*.txt
+*.pdf
+*.log
+*.jsonl
+
+# IDEs
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
