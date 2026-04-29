@@ -70,5 +70,12 @@ def render_trace_panel():
             st.markdown("**Error detail**")
             st.error(trace["error_message"], icon="❌")
 
-        st.markdown("---")
-        st.caption("Retrieval scores, rerank ranks, and chunk IDs appear here from Phase 6 onward.")
+        if st.session_state.get("global_debug_mode", False):
+            st.markdown("---")
+            st.markdown("**Advanced Diagnostics**")
+            st.caption("Retrieval scoring & internals")
+            st.write(f"Hits retrieved: `{trace.get('hits_found', 'N/A')}`")
+            st.write(f"Best dist: `{trace.get('best_distance', 'N/A')}` (Thresh: {trace.get('threshold', 'N/A')})")
+        else:
+            st.markdown("---")
+            st.caption("Enable 'Debug mode' to view raw metric internals.")

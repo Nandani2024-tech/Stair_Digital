@@ -29,9 +29,30 @@ class Chunk:
 
 @dataclass
 class RetrievalHit:
-    chunk: Chunk
-    score: float                 # lower = more similar (Chroma L2 distance)
-    rank: int                    # 1-indexed position in result list
+    chunk_id: str
+    doc_id: str
+    text: str
+    page_start: int
+    page_end: int
+    section_title: Optional[str]
+    token_count: int
+    is_ocr_derived: bool
+    distance: float
+    rank: int
+
+    @property
+    def diagnostic_similarity(self) -> float:
+        """Diagnostic similarity for debugging (1 - distance). 
+        With normalized vectors + cosine space, this is roughly cosine similarity."""
+        return 1.0 - self.distance
+
+@dataclass
+class RetrievalResult:
+    success: bool
+    query: str
+    doc_id: Optional[str]
+    hits: list[RetrievalHit] = field(default_factory=list)
+    error: Optional[str] = None
 
 @dataclass
 class RerankedHit:
@@ -70,3 +91,4 @@ class ConversationTurn:
     content: str
     citations: list[Citation] = field(default_factory=list)
     response_type: Optional[ResponseType] = None
+    retrieved_chunks: list[dict] = field(default_factory=list)

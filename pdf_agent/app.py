@@ -19,7 +19,7 @@ def _init_state():
         "ingestion_error":  None,       # str | None — full error if failed
         "chat_history":     [],         # list[ConversationTurn]
         "last_retrievals":  [],         # list[RetrievalHit] from last turn
-        "last_trace":       [],         # list[dict] — per-turn trace events
+        "last_trace":       {},         # dict — per-turn trace events
         "query_input":      "",         # bound to chat input widget
         "processing":       False,      # bool — spinner guard
         "parsed_pages":     [],         # list[ParsedPage] — set after ingestion
@@ -37,9 +37,6 @@ _init_state()
 from ui.upload_panel import render_upload_panel
 from ui.chat_panel   import render_chat_panel
 from ui.trace_panel  import render_trace_panel
-
-render_trace_panel()          # sidebar — always visible
-
 col_upload, col_chat = st.columns([1, 2], gap="large")
 
 with col_upload:
@@ -47,3 +44,5 @@ with col_upload:
 
 with col_chat:
     render_chat_panel()
+
+render_trace_panel()          # sidebar — always visible, executes last to capture latest trace

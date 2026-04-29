@@ -1,13 +1,14 @@
 ### CHUNKING
 CHUNK_SIZE_TOKENS = 512
-CHUNK_OVERLAP_TOKENS = 50
+CHUNK_OVERLAP_TOKENS = 100
 MIN_CHUNK_LENGTH_CHARS = 100
 
 ### RETRIEVAL
 TOP_K_RETRIEVAL = 10          # candidates fetched from Chroma
 TOP_K_RERANK = 3              # final chunks passed to LLM after rerank
-SIMILARITY_THRESHOLD = 0.35   # Gate 1: cosine distance cutoff (Chroma L2-normalised)
-                               # below this score -> refuse, never call LLM
+SIMILARITY_THRESHOLD = 0.55   # Gate 1: Cosine distance cutoff (lower = more similar).
+                               # With normalized embeddings, scale is 0 to 2.
+                               # Hits with distance > this threshold are blocked.
 
 ### LLM
 LLM_MODEL = "llama-3.3-70b-versatile"   # Groq model string
@@ -30,7 +31,7 @@ LOG_FILE = "data/logs/agent.jsonl"
 ### CITATION FORMAT
 # Every answer MUST render citations as:  [Page 4 | Section 2.1 Inflation Outlook]
 # If section title unavailable:           [Page 4]
-CITATION_FORMAT = "[Page {page} | Section {section}]"
+CITATION_FORMAT = "[Page {page} | Section: {section}]"
 CITATION_FORMAT_NO_SECTION = "[Page {page}]"
 
 ### GATE BEHAVIOUR
@@ -39,7 +40,7 @@ CITATION_FORMAT_NO_SECTION = "[Page {page}]"
 GATE1_REFUSE_MESSAGE_TEMPLATE = (
     "I cannot answer this from the uploaded document. "
     "No section with sufficient relevance was found "
-    "(best match score: {score:.2f}, threshold: {threshold:.2f}). "
+    "(best match distance: {distance}, threshold: {threshold}). "
     "Please ask about content that is explicitly covered in the PDF."
 )
 GATE2_INSUFFICIENT_TOKEN = "[INSUFFICIENT]"

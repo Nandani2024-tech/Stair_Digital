@@ -1,17 +1,33 @@
 # indexing/vector_store.py
 import chromadb
+from chromadb.config import Settings
 from models import Chunk
 from config import CHROMA_DB_DIR, CHROMA_COLLECTION_NAME
 
 class VectorStore:
     def __init__(self):
-        self.client = chromadb.PersistentClient(path=CHROMA_DB_DIR)
+        self.client = chromadb.PersistentClient(
+            path=CHROMA_DB_DIR,
+            settings=Settings(anonymized_telemetry=False)
+        )
+        
+        # Check if collection exists and has correct distance metric
+        existing_collections = [c.name for c in self.client.list_collections()]
+        if CHROMA_COLLECTION_NAME in existing_collections:
+            coll = self.client.get_collection(name=CHROMA_COLLECTION_NAME)
+            # If it's not cosine (default is often l2), we recreate it to avoid mixing metrics
+            metric = (coll.metadata or {}).get("hnsw:space")
+            if metric != "cosine":
+                print(f"[vector_store] WARNING: Existing collection {CHROMA_COLLECTION_NAME!r} uses {metric!r} metric. Recreating as 'cosine' for Phase 7 hardening.")
+                self.client.delete_collection(name=CHROMA_COLLECTION_NAME)
+
         self.collection = self.client.get_or_create_collection(
-            name=CHROMA_COLLECTION_NAME
+            name=CHROMA_COLLECTION_NAME,
+            metadata={"hnsw:space": "cosine"} # Use cosine similarity for normalized vectors
         )
         print(
             f"[vector_store] Collection ready: {CHROMA_COLLECTION_NAME!r} "
-            f"at {CHROMA_DB_DIR}"
+            f"at {CHROMA_DB_DIR} (metric: cosine)"
         )
 
     def get_or_create_collection(self):

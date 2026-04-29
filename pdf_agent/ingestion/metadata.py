@@ -30,6 +30,29 @@ def _compute_median_font_size(pages: list[ParsedPage]) -> float:
     return statistics.median(sizes)
 
 
+def _is_noise_heading(candidate: str) -> bool:
+    """Check if the text is a common non-semantic label (source, chart, disclaimer)."""
+    c = candidate.lower().strip()
+    
+    # Common attribution/source patterns
+    if c.startswith("source:") or c.startswith("source :"):
+        return True
+    if c.startswith("chart") and any(char.isdigit() for char in c):
+        return True
+    if c.startswith("table") and any(char.isdigit() for char in c):
+        return True
+    if c == "disclaimer":
+        return True
+    if c.startswith("note:"):
+        return True
+    
+    # Very short or common noise
+    if len(c) < 3:
+        return True
+        
+    return False
+
+
 def _score_block_as_heading(
     block: dict,
     median_font: float,
@@ -72,10 +95,14 @@ def _score_block_as_heading(
     if _is_page_number_line(candidate):
         return 0, ""
 
+    # NEW: Penalize or skip noise headings
+    if _is_noise_heading(candidate):
+        return 0, ""
+
     score = 0
 
     # Font size signal
-    if median_font > 0 and max_size > median_font * 1.2:
+    if median_font > 0 and max_size > median_font * 1.15: # slightly more permissive font check
         score += 3
 
     # Bold signal
@@ -97,7 +124,7 @@ def _score_block_as_heading(
 
     # ALL CAPS and short
     if candidate.isupper() and len(candidate) < 60:
-        score += 1
+        score += 2 # stronger signal for all-caps headings
 
     return score, candidate
 

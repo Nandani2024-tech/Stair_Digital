@@ -21,59 +21,46 @@ def _split_text_into_token_windows(
 ) -> list[str]:
     """
     Split text into windows of max_tokens words with overlap.
-    Tries to split at sentence boundaries (". " or "\n\n")
-    rather than mid-word.
-    Returns list of text strings - each within the token budget.
+    Tries to split at sentence boundaries to avoid cutting mid-thought.
     """
-    # First try splitting on sentence-like boundaries
-    # to avoid cutting mid-thought
-    sentences = re.split(r'(?<=[.!?])\s+|\n\n+', text)
-
-    windows:  list[str] = []
-    current_sentences: list[str] = []
+    # Robust sentence splitting that preserves punctuation
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    
+    windows: list[str] = []
+    current_chunk: list[str] = []
     current_tokens = 0
-
+    
     for sentence in sentences:
         sentence = sentence.strip()
         if not sentence:
             continue
-
+            
         s_tokens = _count_tokens(sentence)
-
-        # Single sentence already over budget - hard split it
-        if s_tokens > max_tokens:
-            # Flush current buffer first
-            if current_sentences:
-                windows.append(" ".join(current_sentences))
-                current_sentences = []
-                current_tokens = 0
-            # Hard-split the oversized sentence by words
-            words = sentence.split()
-            start = 0
-            while start < len(words):
-                end = min(start + max_tokens, len(words))
-                chunk_text = " ".join(words[start:end])
-                windows.append(chunk_text)
-                start += max_tokens - overlap_tokens
-                if start >= len(words):
+        
+        # If adding this sentence exceeds budget
+        if current_tokens + s_tokens > max_tokens and current_chunk:
+            windows.append(" ".join(current_chunk))
+            
+            # Create overlap from the end of current_chunk
+            # We try to keep last few sentences that fit in overlap_tokens
+            overlap_sentences = []
+            overlap_count = 0
+            for s in reversed(current_chunk):
+                st = _count_tokens(s)
+                if overlap_count + st <= overlap_tokens:
+                    overlap_sentences.insert(0, s)
+                    overlap_count += st
+                else:
                     break
-            continue
+            
+            current_chunk = overlap_sentences
+            current_tokens = overlap_count
 
-        if current_tokens + s_tokens > max_tokens:
-            # Flush
-            if current_sentences:
-                windows.append(" ".join(current_sentences))
-            # Seed next window with overlap from tail of current
-            overlap_text = " ".join(current_sentences)
-            overlap_words = overlap_text.split()[-overlap_tokens:]
-            current_sentences = [" ".join(overlap_words)] if overlap_words else []
-            current_tokens = _count_tokens(" ".join(current_sentences))
-
-        current_sentences.append(sentence)
+        current_chunk.append(sentence)
         current_tokens += s_tokens
 
-    if current_sentences:
-        windows.append(" ".join(current_sentences))
+    if current_chunk:
+        windows.append(" ".join(current_chunk))
 
     return [w for w in windows if w.strip()]
 
