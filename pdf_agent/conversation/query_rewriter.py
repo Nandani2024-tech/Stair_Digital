@@ -21,6 +21,7 @@ class RewriteResult:
     substitution_success: bool = False
     needs_context: bool = False
     dependency_type: str = "independent"
+    is_valid_query: bool = True
 
 class QueryRewriter:
     def __init__(self):

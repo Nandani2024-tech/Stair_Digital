@@ -20,6 +20,7 @@ def _init_state():
         "chat_history":     [],         # list[ConversationTurn]
         "last_retrievals":  [],         # list[RetrievalHit] from last turn
         "last_trace":       {},         # dict — per-turn trace events
+        "turn_traces":      [],         # list[dict] — history of traces for every turn
         "query_input":      "",         # bound to chat input widget
         "processing":       False,      # bool — spinner guard
         "parsed_pages":     [],         # list[ParsedPage] — set after ingestion

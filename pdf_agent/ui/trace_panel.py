@@ -15,82 +15,87 @@ def _gate_badge(passed: bool | None, label: str):
 
 def render_trace_panel():
     with st.sidebar:
-        st.markdown("### Turn Trace")
-        st.caption("Live diagnostic for last query")
+        st.markdown("## 🧠 Turn Trace History")
+        st.caption("Inspect pipeline diagnostics for all turns")
         st.markdown("---")
 
-        trace = st.session_state.get("last_trace")
+        traces = st.session_state.get("turn_traces", [])
 
-        if not trace:
+        if not traces:
             st.info("No turn processed yet.", icon="🔎")
             return
 
-        # 1. Intent & Type
-        st.markdown("**Intent Analysis**")
-        q_type = trace.get("query_type", "standalone")
-        st.write(f"Type: `{q_type.upper()}`")
+        # ── Highlight Current Turn ─────────────────────────────────
+        latest_trace = traces[-1]
+        st.markdown("### 🔍 Latest Turn")
+        st.markdown(f"**Raw:** `{latest_trace.get('query_raw', '—')}`")
+        if latest_trace.get("query_rewritten"):
+            st.markdown(f"**Rewritten:** `{latest_trace['query_rewritten']}`")
+        st.markdown("---")
+
+        # ── History Container ──────────────────────────────────────
+        st.markdown("### 📜 Past Traces (Latest First)")
         
-        st.markdown("**Raw query**")
-        st.code(trace.get("query_raw") or "—", language=None)
+        # Display in reverse chronological order
+        for i, trace in enumerate(reversed(traces)):
+            turn_num = len(traces) - i
+            query_preview = trace.get("query_raw", "Unknown")[:30]
+            
+            with st.expander(f"Turn {turn_num} — {query_preview}..."):
+                # 1. Intent Analysis
+                st.markdown("**Intent Analysis**")
+                st.write(f"Type: `{trace.get('query_type', 'standalone').upper()}`")
+                st.write(f"Dependency: `{trace.get('dependency_type', 'independent')}`")
+                
+                st.markdown("**Rewritten Query**")
+                st.code(trace.get("query_rewritten") or trace.get("query_raw"), language=None)
 
-        if trace.get("query_rewritten"):
-            st.markdown("**Rewritten query**")
-            st.code(trace["query_rewritten"], language=None)
-            st.caption("↑ context-aware resolution")
+                st.markdown("---")
 
-        st.markdown("---")
+                # 2. Grounding Decision
+                st.markdown("**Grounding Decision**")
+                if trace.get("context_reuse_decision"):
+                     st.success("CONTEXT REUSED", icon="♻️")
+                else:
+                     st.info("FRESH RETRIEVAL", icon="📡")
+                st.caption(f"Reason: {trace.get('reuse_reason', 'N/A')}")
+                if trace.get("reuse_confidence"):
+                    st.write(f"Sem. Conf: `{trace['reuse_confidence']:.4f}`")
 
-        # 2. Context Grounding Decision
-        st.markdown("**Grounding Decision**")
-        if trace.get("context_reuse_decision"):
-             st.success(f"CONTEXT REUSED", icon="♻️")
-             st.caption(f"Reason: {trace.get('reuse_reason')}")
-             st.caption(f"Sem. Conf: `{trace.get('reuse_confidence', 0.0):.4f}`")
-        else:
-             st.info("FRESH RETRIEVAL", icon="📡")
-             st.caption(f"Reason: {trace.get('reuse_reason') or 'source drift'}")
+                st.markdown("---")
 
-        st.markdown("---")
+                # 3. Hallucination Gates
+                st.markdown("**Hallucination Gates**")
+                _gate_badge(trace.get("gate1_passed"), "Gate 1 — retrieval barrier")
+                _gate_badge(trace.get("gate2_passed"), "Gate 2 — citation validator")
 
-        # 3. Gates
-        st.markdown("**Hallucination Gates**")
-        _gate_badge(trace.get("gate1_passed"), "Gate 1 — retrieval barrier")
-        _gate_badge(trace.get("gate2_passed"), "Gate 2 — citation validator")
+                st.markdown("---")
 
-        st.markdown("---")
+                # 4. Response Status
+                rt = trace.get("response_type")
+                st.markdown("**Response Status**")
+                if rt == "answer":
+                    st.success("ANSWER — grounded", icon="💬")
+                elif rt == "refusal":
+                    st.warning("REFUSAL — out of scope", icon="🔍")
+                elif rt == "error":
+                    st.error("ERROR — internal", icon="❌")
+                elif rt == "clarify":
+                    st.warning("CLARIFY — ambiguous", icon="🤔")
+                else:
+                    st.write(f"Status: `{rt or 'N/A'}`")
 
-        # 4. Response Info
-        rt = trace.get("response_type")
-        st.markdown("**Response Status**")
-        if rt == "answer":
-            st.success("ANSWER — grounded", icon="💬")
-        elif rt == "refusal":
-            st.warning("REFUSAL — out of scope", icon="🔍")
-        elif rt == "error":
-            st.error("ERROR — pipeline failure", icon="❌")
-        elif rt == "clarify":
-            st.warning("CLARIFY — ambiguous", icon="🤔")
-        else:
-            st.caption("—")
-
-        # Citations
-        citations = trace.get("citations", [])
-        if citations:
-            st.markdown("**Citations attached**")
-            for c in citations:
-                st.markdown(f"- `{c}`")
-
-        # Debug details
-        if st.session_state.get("global_debug_mode", False):
-            st.markdown("---")
-            st.markdown("**Advanced Statistics**")
-            st.write(f"Source: `{trace.get('source', 'N/A')}`")
-            st.write(f"Best Dist: `{trace.get('best_distance', 'N/A')}`")
-            if trace.get("hits_found") is not None:
-                st.write(f"Hits found: `{trace.get('hits_found')}`")
-            if trace.get("best_distance") is not None:
-                st.write(f"Best Dist: `{trace.get('best_distance'):.4f}`")
-            if trace.get("reuse_confidence"):
-                st.write(f"Reuse Conf: `{trace['reuse_confidence']:.4f}`")
-            if trace.get("hits_found") is not None:
-                st.write(f"Hits found: `{trace.get('hits_found')}`")
+                # Citations
+                citations = trace.get("citations", [])
+                if citations:
+                    st.markdown("**Citations**")
+                    for c in citations:
+                        st.write(f"- `{c}`")
+                
+                # Metadata
+                if st.session_state.get("global_debug_mode", False):
+                    st.markdown("---")
+                    st.markdown("**Advanced Metadata**")
+                    st.write(f"Source: `{trace.get('source', 'N/A')}`")
+                    if trace.get("best_distance") is not None:
+                        st.write(f"Best Dist: `{trace.get('best_distance'):.4f}`")

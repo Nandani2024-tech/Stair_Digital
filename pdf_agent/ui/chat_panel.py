@@ -115,6 +115,8 @@ def render_chat_panel():
                 
                 query_type = getattr(rewrite_result, "query_type", "standalone")
                 rewritten_query = rewrite_result.rewritten_query
+                dependency_type = getattr(rewrite_result, "dependency_type", "independent")
+                is_valid_query = getattr(rewrite_result, "is_valid_query", True)
                 
                 if rewrite_result.needs_clarification:
                     st.warning("**Ambiguous Input**\n\nCould you clarify what you are referring to?", icon="🤔")
@@ -127,9 +129,11 @@ def render_chat_panel():
                     st.session_state["last_trace"] = {
                         "query_raw": query,
                         "query_type": query_type,
+                        "dependency_type": dependency_type,
                         "needs_clarification": True,
                         "timestamp": time.time(),
                     }
+                    st.session_state["turn_traces"].append(st.session_state["last_trace"].copy())
                     log_event("turn_completed", turn_id=turn_id, response_type="clarify")
                     return
 
@@ -163,6 +167,8 @@ def render_chat_panel():
                     "query_raw": query,
                     "query_rewritten": rewritten_query if rewritten_query != query else None,
                     "query_type": query_type,
+                    "dependency_type": dependency_type,
+                    "is_valid_query": is_valid_query,
                     "context_reuse_decision": reuse_decision["reuse_context"],
                     "reuse_confidence": reuse_decision["confidence"],
                     "reuse_reason": reuse_decision["reason"],
@@ -236,6 +242,11 @@ def render_chat_panel():
                 render_source_preview(retrieved_chunks, turn_index=current_turn_index)
 
             st.session_state["chat_history"].append(assistant_turn)
+            
+            # Persist trace to history
+            if "last_trace" in st.session_state:
+                st.session_state["turn_traces"].append(st.session_state["last_trace"].copy())
+                
             log_event("turn_completed", turn_id=turn_id, response_type=assistant_turn.response_type.value if assistant_turn.response_type else "None")
 
     finally:
