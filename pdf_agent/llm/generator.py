@@ -136,10 +136,21 @@ Instructions:
             )
 
     def _extract_citations(self, text: str) -> List[Citation]:
+        """
+        Extracts citations from raw text using multiple regex patterns. 
+        Tolerant of spacing, case, and page numbers.
+        """
         found: List[Citation] = []
         seen: set = set()
 
-        def _add(page: int, section: str | None, chunk_id: str = ""):
+        def _add(page_str: str, section: str | None, chunk_id: str = ""):
+            # Handle page ranges like "2-3", take the first page for simplicity
+            try:
+                page_part = re.split(r'[-\u2013\u2014]', page_str)[0].strip()
+                page = int(page_part)
+            except (ValueError, IndexError):
+                return
+
             sec_clean = (section or "").strip()
             sec_lower = sec_clean.lower()
             if sec_lower.startswith("section:"):
@@ -158,36 +169,36 @@ Instructions:
                     chunk_id=chunk_id,
                 ))
 
-        pattern_canonical = re.compile(r'\[Page\s+(\d+)\s*\|\s*§([^\]]+)\]', re.IGNORECASE)
-        for m in pattern_canonical.finditer(text):
-            _add(int(m.group(1)), m.group(2).strip())
+        # Robust extraction for various formats
+        patterns = [
+            re.compile(r'\[Page\s*(\d+(?:-\d+)?)\s*\|\s*§\s*([^\]]+)\]', re.IGNORECASE),
+            re.compile(r'\[Page\s*(\d+(?:-\d+)?)\s*\|\s*Section:\s*([^\]]+)\]', re.IGNORECASE),
+            re.compile(r'\[Page\s*(\d+(?:-\d+)?)\s*\|\s*Section\s+([^\]|]+)\]', re.IGNORECASE),
+            re.compile(r'\[Page\s*(\d+(?:-\d+)?)\s*\|\s*([^\]]{2,120})\]', re.IGNORECASE),
+            re.compile(r'\[Page\s*(\d+(?:-\d+)?)\]', re.IGNORECASE)
+        ]
 
-        pattern_colon = re.compile(r'\[Page\s+(\d+)\s*\|\s*Section:\s*([^\]]+)\]', re.IGNORECASE)
-        for m in pattern_colon.finditer(text):
-            _add(int(m.group(1)), m.group(2).strip())
-
-        pattern_bare = re.compile(r'\[Page\s+(\d+)\s*\|\s*Section\s+([^\]|]+)\]', re.IGNORECASE)
-        for m in pattern_bare.finditer(text):
-            _add(int(m.group(1)), m.group(2).strip())
-
-        pattern_pipe = re.compile(r'\[Page\s+(\d+)\s*\|\s*([^\]]{3,120})\]', re.IGNORECASE)
-        for m in pattern_pipe.finditer(text):
-            _add(int(m.group(1)), m.group(2).strip())
-
-        pattern_page_only = re.compile(r'\[Page\s+(\d+)\]', re.IGNORECASE)
-        for m in pattern_page_only.finditer(text):
-            _add(int(m.group(1)), None)
+        for pattern in patterns:
+            for m in pattern.finditer(text):
+                p_val = m.group(1)
+                s_val = m.group(2) if len(m.groups()) > 1 else None
+                _add(p_val, s_val)
 
         return found
 
     def _strip_citation_tags(self, text: str) -> str:
-        clean = re.sub(r'\[Page\s+\d+[^\]]*\]', '', text, flags=re.IGNORECASE)
-        return re.sub(r'\s{2,}', ' ', clean).strip()
-
+        """Removes citation tags from the text while preserving punctuation."""
+        return re.sub(r'\[Page\s*\d+[^\]]*\]', '', text, flags=re.IGNORECASE).strip()
 
     def _parse_response(self, raw: str, hits: List[RetrievalHit]) -> AgentResponse:
+        """
+        STABILIZED PARSER: Extract citations and answer text without strict label dependency.
+        - If >=1 valid citation found -> PASS.
+        - If parsing failure -> REFUSAL (not ERROR).
+        """
         print(f"\n---> DEBUG_RAW_CONTENT:\n{repr(raw)}\n<---")
         
+        # 1. Immediate Refusal check
         if GATE2_INSUFFICIENT_TOKEN in raw:
             return AgentResponse(
                 response_type=ResponseType.REFUSAL,
@@ -197,53 +208,57 @@ Instructions:
                 gate2_passed=False
             )
 
-        citations = self._extract_citations(raw)
-        print(f"---> DEBUG_FOUND:\n{citations}\n<---")
-        
-        # Validating against hits mapping for extracted citations (strict matching)
+        # 2. Extract Citations (Robust)
+        extracted_citations = self._extract_citations(raw)
         valid_citations = []
-        for c in citations:
-            matching_hit = None
+        for c in extracted_citations:
             for hit in hits:
                 if hit.page_start <= c.page <= hit.page_end:
                     if c.section and hit.section_title:
-                        # fuzzy match: alpha-numeric string subset check
-                        c_sec_norm = re.sub(r'[^a-z0-9]', '', c.section.lower())
-                        h_sec_norm = re.sub(r'[^a-z0-9]', '', hit.section_title.lower())
-                        if c_sec_norm in h_sec_norm or h_sec_norm in c_sec_norm:
-                            matching_hit = hit
+                        # Fuzzy match section titles
+                        c_sec = re.sub(r'[^a-z0-9]', '', c.section.lower())
+                        h_sec = re.sub(r'[^a-z0-9]', '', hit.section_title.lower())
+                        if c_sec in h_sec or h_sec in c_sec:
+                            c.chunk_id = hit.chunk_id
+                            valid_citations.append(c)
                             break
                     else:
-                        matching_hit = hit
+                        c.chunk_id = hit.chunk_id
+                        valid_citations.append(c)
                         break
-            if matching_hit:
-                c.chunk_id = matching_hit.chunk_id
-                valid_citations.append(c)
-
-        citations = valid_citations
-
+        
+        # 3. Clean Answer Text
+        # Tolerance: Strip tags, strip specific labels if present, but don't fail if missing
         clean_answer = self._strip_citation_tags(raw)
-        if "Answer:" in clean_answer:
-            clean_answer = clean_answer.replace("Answer:", "").replace("Citations:", "").strip()
+        
+        # Clean up labels like "Answer:" or "Citations:" if the model used them
+        labels = ["Answer:", "Response:", "Citations:", "Sources:"]
+        for label in labels:
+            if clean_answer.lower().startswith(label.lower()):
+                clean_answer = clean_answer[len(label):].strip()
+        
+        # Also clean up if they are in the middle (sometimes models repeat them)
+        clean_answer = re.sub(r'(?i)\n(Answer|Citations|Sources|Response):\s*', '\n', clean_answer).strip()
 
-        print(f"---> DEBUG_CITATIONS:\n{citations}\n<---")
+        # 4. Gate 2 Critical Decision
+        # REQUIREMENT: Simplified - if >=1 valid citation maps -> PASS
+        gate2_passed = (len(valid_citations) >= 1) and (len(clean_answer) > 5)
 
-        # Hard fail: no answer found or citations failed validation
-        if not clean_answer or not citations or len(citations) != len(self._extract_citations(raw)):
+        if not gate2_passed:
             return AgentResponse(
                 response_type=ResponseType.REFUSAL,
                 answer=None,
-                refusal_reason="The document does not contain sufficient information to answer this reliably (Citation validation failed).",
+                refusal_reason="I cannot find sufficient evidence in the document to support an answer to this query.",
                 citations=[],
                 gate1_passed=True,
                 gate2_passed=False
             )
 
-        # Happy path
+        # 5. Success Path
         return AgentResponse(
             response_type=ResponseType.ANSWER,
             answer=clean_answer,
-            citations=citations,
+            citations=valid_citations,
             gate1_passed=True,
             gate2_passed=True
         )

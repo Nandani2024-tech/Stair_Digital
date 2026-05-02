@@ -1,5 +1,6 @@
 import re
 import os
+import json
 from typing import List
 from dataclasses import dataclass
 from models import ConversationTurn
@@ -14,14 +15,18 @@ class RewriteResult:
     needs_clarification: bool
     rewrite_type: str        # 'none', 'heuristic', 'llm', 'clarification'
     history_turns_used: int
+    query_type: str = "standalone" # 'standalone', 'follow_up', 'ambiguous'
     intent: str = "factual"
     anchor_used: str = "none"
     substitution_success: bool = False
+    needs_context: bool = False
+    dependency_type: str = "independent"
 
 class QueryRewriter:
     def __init__(self):
         self.api_key = os.getenv("GROQ_API_KEY")
         self._client = None
+        self.last_semantic_query = ""
         
     @property
     def client(self):
@@ -30,19 +35,33 @@ class QueryRewriter:
         return self._client
         
     def _extract_subject(self, query: str) -> str:
-        stop_phrases = [
-            "what does the document say about ", "what is ", "explain ", 
-            "tell me about ", "describe ", "can you explain ", 
-            "please explain ", "what about "
-        ]
-        q = query.strip()
-        q_lower = q.lower()
-        for phrase in stop_phrases:
-            if q_lower.startswith(phrase):
-                q = q[len(phrase):].strip()
-                break
+        """Extract ONLY noun phrase / topic by removing question scaffolding."""
+        if not query: return None
         
-        q = q.rstrip(' ?.')
+        # Scaffolding and verbs to remove
+        junk = [
+             r"^what (does|is|are|was|were)\s+(the\s+)?report\s+say\s+about\s+",
+             r"^what (is|are|were|was)\s+(the\s+)?",
+             r"^tell\s+me\s+about\s+",
+             r"^explain\s+(the\s+)?",
+             r"^describe\s+(the\s+)?",
+             r"^summarize\s+(the\s+)?",
+             r"^elaborate\s+on\s+(the\s+)?",
+             r"^can\s+you\s+(explain|tell\s+me\s+about)\s+",
+             r"\s+mentioned\s+in\s+the\s+report$",
+             r"\s+in\s+the\s+report$",
+             r"\s+mentioned$",
+             r"\s+report\s+says\s+about\s+"
+        ]
+        
+        q = query.strip()
+        for pattern in junk:
+            q = re.sub(pattern, "", q, flags=re.IGNORECASE).strip()
+            
+        q = q.rstrip("?.")
+        # Final clean of leading prepositions/articles
+        q = re.sub(r"^(about|on|the|of|for|a|an)\s+", "", q, flags=re.IGNORECASE)
+        
         return q if len(q.split()) >= 1 else None
         
     def _get_cleaned_words(self, text: str) -> set:
@@ -53,7 +72,6 @@ class QueryRewriter:
         user_turns = []
         assistant_turn = None
         
-        # We index purely safely across histories
         for t in reversed(history):
             if t.role == "user" and len(user_turns) < 2:
                 user_turns.insert(0, t.content)
@@ -78,98 +96,153 @@ class QueryRewriter:
         
         return "\n".join(context_parts), current_query, previous_query, turns_used
 
-    def rewrite(self, query: str, history: List[ConversationTurn]) -> RewriteResult:
-        q_lower = query.lower().strip()
-        words = q_lower.split()
-        word_count = len(words)
-        
-        intent_mode = "factual"
-        clarification_phrases = ["what about it", "explain this more", "and then"]
-        expand_phrases = ["explain more", "go deeper", "elaborate", "tell me more"]
-        reasoning_phrases = ["why", "importance", "impact", "significance", "effect", "meaning", "cause", "how"]
-        
-        if any(p in q_lower for p in expand_phrases):
-             intent_mode = "followup_expand"
-        elif any(p in q_lower for p in reasoning_phrases):
-             intent_mode = "reasoning"
-        elif any(p in q_lower for p in clarification_phrases):
-             intent_mode = "clarification"
+    def _detect_dependency(self, query: str, context_str: str) -> dict:
+        """Classify the query based on semantic dependency."""
+        if not self.client:
+            return {"type": "independent", "reason": "No LLM client"}
 
-        if not history:
-            return RewriteResult(query, False, 1.0, False, "none", 0, intent=intent_mode)
-            
-        q_lower = query.lower().strip()
-        words = q_lower.split()
-        word_count = len(words)
-        
-        context_str, current_user_query, previous_user_query, turns_used = self._extract_context(history)
-        
-        anchor = None
-        if previous_user_query:
-            extracted = self._extract_subject(previous_user_query)
-            if extracted and extracted.lower() not in ["this", "topic", "thing", "it", "that", ""]:
-                anchor = extracted
-                
-        if anchor and len(anchor.split()) < 1:
-            anchor = None
-        
-        if word_count < 6 and not anchor and intent_mode == "factual":
-             intent_mode = "clarification"
-             
-        needs_clarification = (intent_mode == "clarification")
-        
-        if needs_clarification and not anchor:
-             return RewriteResult(query, False, 0.0, True, "clarification", 0, intent="clarification")
+        prompt = f"""Classify the query:
 
-        # Fall out if history lacks referenceable tokens
-        if not previous_user_query or not anchor:
-             return RewriteResult(query, False, 1.0, False, "none", 0, intent=intent_mode)
-             
-        # 2. Intent Classification - Semantic Substitution
-        pronoun_match = re.search(r'\b(it|this|that|there)\b', q_lower)
-        
-        if pronoun_match and len(anchor.split()) >= 1:
-            def _replacer(match):
-                word = match.group(0).lower()
-                if word == "there":
-                    return f"related to {anchor}"
-                return anchor
-                
-            new_query, count = re.subn(r'\b(it|this|that|there)\b', _replacer, query, count=1, flags=re.IGNORECASE)
-            
-            if count > 0:
-                 return RewriteResult(
-                     new_query, True, 0.8, False, "heuristic", turns_used,
-                     intent=intent_mode, anchor_used=anchor, substitution_success=True
-                 )
+1. independent → fully meaningful alone
+2. dependent → relies on previous context
 
-        # 3. Intent Classification - LLM Rewrite (Controlled)
-        if self.client and pronoun_match:
-            prompt = f"""Rewrite the query to be fully self-contained using only conversation context. Do NOT add new facts.
-If it is already self-contained, return the original query exactly.
+Return STRICT JSON:
+{{
+  "type": "independent" or "dependent",
+  "reason": "short explanation"
+}}
 
-Conversation Context:
+Context:
 {context_str}
 
-Current Query: {query}
+Query: {query}
+"""
+        try:
+            res = self.client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                response_format={"type": "json_object"}
+            )
+            return json.loads(res.choices[0].message.content)
+        except Exception as e:
+            return {"type": "independent", "reason": f"Error: {str(e)}"}
+
+    def _semantic_merge(self, query: str, base: str) -> str:
+        """Merge follow-up with semantic base using LLM."""
+        if not self.client or not base:
+            return f"{query} {base}".strip() if base else query
+            
+        prompt = f"""Rewrite the query into a concise, self-contained SEARCH QUERY.
+- Preserve interrogative intent (question form OR keyword query)
+- DO NOT answer the question
+- DO NOT add explanations
+- ONLY inject missing context from history
+- Max 12-15 words
+- Must remain a query OR keyword search
+- No full sentences like answers
+
+Context Topic: {base}
+Follow-up Query: {query}
 Standalone Query:"""
 
-            try:
-                res = self.client.chat.completions.create(
-                    model=LLM_MODEL,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.0,
-                    max_tokens=60
-                )
-                rewritten = res.choices[0].message.content.strip()
-                
-                orig_words = self._get_cleaned_words(query)
-                rewritten_words = self._get_cleaned_words(rewritten)
-                
-                if len(rewritten_words) <= 2 * len(orig_words) + 10:
-                    return RewriteResult(rewritten, True, 0.6, False, "llm", turns_used, intent=intent_mode, anchor_used=(anchor or "none"))
-            except Exception as e:
-                print(f"[QueryRewriter] LLM Error: {e}")
-                
-        # 4. Fallback (Standalone Native)
-        return RewriteResult(query, False, 1.0, False, "none", turns_used, intent=intent_mode, anchor_used=(anchor or "none"))
+        try:
+            res = self.client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                max_tokens=60
+            )
+            return res.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"[QueryRewriter] Merge Error: {e}")
+            return f"{query} {base}"
+
+    def rewrite(self, query: str, history: List[ConversationTurn]) -> RewriteResult:
+        """Process query, detect dependency, and rewrite if necessary (Always runs)."""
+        context_str, _, previous_user_query, turns_used = self._extract_context(history)
+        
+        # FIX 1 & 2: Anchor and Semantic Base
+        anchor = self._extract_subject(previous_user_query) if previous_user_query else "none"
+        semantic_base = self.last_semantic_query or (anchor if anchor != "none" else "")
+        if semantic_base == "none": semantic_base = ""
+
+        # FIX 3: Intent-aware shorthand
+        shorthands = {
+            "explain": "Explain",
+            "summarize": "Summarize",
+            "elaborate": "Elaborate",
+            "tell me more": "Elaborate",
+            "expand on": "Elaborate"
+        }
+        
+        q_lower = query.lower().strip()
+        shorthand_triggered = False
+        rewritten_query = query
+        rewrite_type = "none"
+        used_history = False
+        substitution_success = False
+
+        for prefix, verb in shorthands.items():
+            if q_lower.startswith(prefix) and (len(q_lower.split()) <= 4 or "that" in q_lower or "it" in q_lower):
+                if semantic_base:
+                    rewritten_query = f"{verb} {semantic_base}"
+                    rewrite_type = "intent_shorthand"
+                    used_history = True
+                    shorthand_triggered = True
+                    break
+
+        # FIX 4: Strategy Upgrade
+        dep_type = "independent"
+        needs_context = False
+        
+        if not shorthand_triggered:
+            # 1. Dependency Detection
+            dep_data = self._detect_dependency(query, context_str)
+            dep_type = dep_data.get("type", "independent")
+            needs_context = (dep_type == "dependent")
+
+            if needs_context:
+                rewritten_query = self._semantic_merge(query, semantic_base)
+                rewrite_type = "semantic_merge"
+                used_history = True
+            else:
+                rewritten_query = query # clean(query)
+                rewrite_type = "none"
+
+        # 3. Validation
+        is_valid_query = True
+        rejection_phrases = ["the report states", "it mentions", "the document says", "this report", "the document mentions", "according to"]
+        if any(p in rewritten_query.lower() for p in rejection_phrases):
+            is_valid_query = False
+            rewritten_query = f"{query} {anchor}" if anchor != "none" else query
+            rewrite_type = "fallback_validation"
+
+        # FIX 2: Store State (Subject of current rewritten query)
+        self.last_semantic_query = self._extract_subject(rewritten_query) or rewritten_query
+
+        # Logging MANDATORY (FIX 5)
+        print(f"\n[QueryUnderstanding]")
+        print(f"raw: \"{query}\"")
+        print(f"dependency: {dep_type}")
+        print(f"needs_context: {needs_context}")
+        print(f"semantic_base: <{semantic_base}>")
+        print(f"rewritten: \"{rewritten_query}\"")
+        print(f"final_query: <{rewritten_query}>")
+        print(f"rewrite_type: {rewrite_type}")
+        print(f"anchor_used: {anchor}")
+        print(f"is_valid_query: {is_valid_query}\n")
+
+        return RewriteResult(
+            rewritten_query=rewritten_query,
+            used_history=used_history,
+            confidence=0.7 if used_history else 1.0,
+            needs_clarification=False,
+            rewrite_type=rewrite_type,
+            history_turns_used=turns_used,
+            query_type="follow_up" if needs_context else "standalone",
+            anchor_used=anchor,
+            substitution_success=substitution_success,
+            needs_context=needs_context,
+            dependency_type=dep_type
+        )

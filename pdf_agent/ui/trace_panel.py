@@ -1,16 +1,21 @@
+# ui/trace_panel.py
 import streamlit as st
 
 def _gate_badge(passed: bool | None, label: str):
     if passed is True:
         st.success(f"{label}: PASS", icon="✅")
     elif passed is False:
-        st.error(f"{label}: FAIL — LLM was not called", icon="🚫")
+        # FIX 3: Trace accuracy
+        if "Gate 2" in label:
+            st.error(f"{label}: FAIL — citation/grounding validation failed", icon="🚫")
+        else:
+            st.error(f"{label}: FAIL — retrieval relevance threshold not met", icon="🚫")
     else:
         st.caption(f"{label}: not evaluated")
 
 def render_trace_panel():
     with st.sidebar:
-        st.markdown("### Turn trace")
+        st.markdown("### Turn Trace")
         st.caption("Live diagnostic for last query")
         st.markdown("---")
 
@@ -20,62 +25,72 @@ def render_trace_panel():
             st.info("No turn processed yet.", icon="🔎")
             return
 
-        # Query
+        # 1. Intent & Type
+        st.markdown("**Intent Analysis**")
+        q_type = trace.get("query_type", "standalone")
+        st.write(f"Type: `{q_type.upper()}`")
+        
         st.markdown("**Raw query**")
         st.code(trace.get("query_raw") or "—", language=None)
 
         if trace.get("query_rewritten"):
             st.markdown("**Rewritten query**")
             st.code(trace["query_rewritten"], language=None)
-            st.caption("↑ follow-up resolved using conversation history")
+            st.caption("↑ context-aware resolution")
 
         st.markdown("---")
 
-        # Gates
-        st.markdown("**Hallucination gates**")
-        _gate_badge(trace.get("gate1_passed"), "Gate 1 — retrieval threshold")
-        _gate_badge(trace.get("gate2_passed"), "Gate 2 — LLM citation check")
+        # 2. Context Grounding Decision
+        st.markdown("**Grounding Decision**")
+        if trace.get("context_reuse_decision"):
+             st.success(f"CONTEXT REUSED", icon="♻️")
+             st.caption(f"Reason: {trace.get('reuse_reason')}")
+             st.caption(f"Sem. Conf: `{trace.get('reuse_confidence', 0.0):.4f}`")
+        else:
+             st.info("FRESH RETRIEVAL", icon="📡")
+             st.caption(f"Reason: {trace.get('reuse_reason') or 'source drift'}")
 
         st.markdown("---")
 
-        # Response type
+        # 3. Gates
+        st.markdown("**Hallucination Gates**")
+        _gate_badge(trace.get("gate1_passed"), "Gate 1 — retrieval barrier")
+        _gate_badge(trace.get("gate2_passed"), "Gate 2 — citation validator")
+
+        st.markdown("---")
+
+        # 4. Response Info
         rt = trace.get("response_type")
-        st.markdown("**Response type**")
+        st.markdown("**Response Status**")
         if rt == "answer":
-            st.success("ANSWER — grounded response sent", icon="💬")
+            st.success("ANSWER — grounded", icon="💬")
         elif rt == "refusal":
-            st.warning("REFUSAL — query out of scope", icon="🔍")
+            st.warning("REFUSAL — out of scope", icon="🔍")
         elif rt == "error":
             st.error("ERROR — pipeline failure", icon="❌")
+        elif rt == "clarify":
+            st.warning("CLARIFY — ambiguous", icon="🤔")
         else:
             st.caption("—")
 
         # Citations
         citations = trace.get("citations", [])
-        st.markdown("**Citations used**")
         if citations:
+            st.markdown("**Citations attached**")
             for c in citations:
                 st.markdown(f"- `{c}`")
-        else:
-            st.caption("None")
 
-        # Refusal / error details
-        if trace.get("refusal_reason"):
-            st.markdown("---")
-            st.markdown("**Refusal reason**")
-            st.warning(trace["refusal_reason"], icon="ℹ️")
-
-        if trace.get("error_message"):
-            st.markdown("---")
-            st.markdown("**Error detail**")
-            st.error(trace["error_message"], icon="❌")
-
+        # Debug details
         if st.session_state.get("global_debug_mode", False):
             st.markdown("---")
-            st.markdown("**Advanced Diagnostics**")
-            st.caption("Retrieval scoring & internals")
-            st.write(f"Hits retrieved: `{trace.get('hits_found', 'N/A')}`")
-            st.write(f"Best dist: `{trace.get('best_distance', 'N/A')}` (Thresh: {trace.get('threshold', 'N/A')})")
-        else:
-            st.markdown("---")
-            st.caption("Enable 'Debug mode' to view raw metric internals.")
+            st.markdown("**Advanced Statistics**")
+            st.write(f"Source: `{trace.get('source', 'N/A')}`")
+            st.write(f"Best Dist: `{trace.get('best_distance', 'N/A')}`")
+            if trace.get("hits_found") is not None:
+                st.write(f"Hits found: `{trace.get('hits_found')}`")
+            if trace.get("best_distance") is not None:
+                st.write(f"Best Dist: `{trace.get('best_distance'):.4f}`")
+            if trace.get("reuse_confidence"):
+                st.write(f"Reuse Conf: `{trace['reuse_confidence']:.4f}`")
+            if trace.get("hits_found") is not None:
+                st.write(f"Hits found: `{trace.get('hits_found')}`")
