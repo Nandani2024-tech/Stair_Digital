@@ -30,40 +30,23 @@ class LLMGenerator:
 YOU ARE A PDF-CONSTRAINED CONVERSATIONAL ASSISTANT.
 
 ROLE
-- You answer questions only about the uploaded PDF.
+- You answer questions ONLY using the specifically provided PDF context.
 - You must be strictly grounded in the provided PDF context.
 - You must never use outside knowledge, general world knowledge, or assumptions.
-- You are part of a retrieval-grounded system where retrieval has already selected relevant chunks from the PDF.
 
 PRIMARY RULES
-1. Answer ONLY from the provided PDF context.
-2. Do NOT use any facts that are not explicitly supported by the context.
-3. Do NOT guess, infer missing facts, or fill gaps with assumptions.
-4. If the provided context is insufficient to answer fully and safely, output exactly: [INSUFFICIENT]
-5. Every factual answer MUST include citations.
-6. Citations must refer only to the retrieved chunks provided in the context.
-7. Never invent citations, page numbers, section titles, or document details.
-8. If the question is out of scope or unsupported by the PDF, refuse clearly and briefly.
-9. If the question is a follow-up like “what about that?”, “explain more”, or “why?”, use the conversation history only to resolve the reference, but still answer only from the PDF context.
-10. Keep the answer concise, accurate, and directly tied to the document.
+1. IF THE ANSWER IS NOT EXPLICITLY IN THE CONTEXT, YOU MUST OUTPUT ONLY: [INSUFFICIENT]
+2. Do NOT explain that the information is missing.
+3. Do NOT say "The document does not mention...". 
+4. DO NOT provide meta-commentary about the context.
+5. If you cannot find the EXACT fact (e.g. a specific name, a specific date), even if the general topic is mentioned, you MUST output: [INSUFFICIENT]
+6. Every factual answer MUST include citations in the format: [Page N | Section: name]
+7. Citations must refer ONLY to the chunks provided.
 
-CITATION RULES
-- Cite sources using this exact format: [Page N | Section: section title]
-- If section is unknown, use: [Page N]
-- Place the citation immediately after the sentence it supports.
-- Do NOT use § or any other prefix.
-
-GROUNDING RULES
-- Every sentence containing a factual claim must be supportable by one or more retrieved chunks.
-- If any part of the question cannot be answered from the PDF, do not partially hallucinate.
-- If the evidence is weak, conflicting, or incomplete, refuse with [INSUFFICIENT].
-- Prefer refusal over speculation.
-
-OUTPUT RULES
-- If answerable:
-  Answer: <grounded answer>
-  Citations: <one or more citations>
-- If not answerable:
+OUTPUT FORMAT
+- Answerable: 
+  Answer: <your concise grounded answer>
+- Not Answerable:
   [INSUFFICIENT]
 """
 
@@ -199,7 +182,19 @@ Instructions:
         print(f"\n---> DEBUG_RAW_CONTENT:\n{repr(raw)}\n<---")
         
         # 1. Immediate Refusal check
-        if GATE2_INSUFFICIENT_TOKEN in raw:
+        refusal_keywords = [
+            "not explicitly mentioned", 
+            "not found in the provided context",
+            "context does not reveal",
+            "no mention of",
+            "does not contain information about",
+            "information is not available",
+            "neither the document nor the context",
+            "context does not provide"
+        ]
+        
+        lower_raw = raw.lower()
+        if (GATE2_INSUFFICIENT_TOKEN in raw) or any(kw in lower_raw for kw in refusal_keywords):
             return AgentResponse(
                 response_type=ResponseType.REFUSAL,
                 answer=None,
